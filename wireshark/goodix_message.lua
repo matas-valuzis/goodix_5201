@@ -32,7 +32,8 @@ reset_sensor_copy = ProtoField.bool("goodix.reset.sensor_copy", "Reset Sensor Co
 reset_number = ProtoField.uint16("goodix.reset.number", "Sensor Reset Number")
 
 register_multiple = ProtoField.bool("goodix.register.multiple", "Multiple Addresses")
-register_address = ProtoField.uint16("goodix.register.address", "Base Address", base.HEX)
+register_vendor_id = ProtoField.bytes("goodix.register.vendor", "Vendor ID")
+register_address = ProtoField.bytes("goodix.register.address", "Base Address")
 
 psk_flags = ProtoField.uint32("goodix.psk.flags", "PSK Flags", base.HEX)
 psk_length = ProtoField.uint32("goodix.psk.length", "PSK Lenght")
@@ -49,7 +50,7 @@ config_sensor_chip = ProtoField.uint8("goodix.config_sensor_chip", "Sensor Chip"
 protocol.fields = {pack_flags, cmd0_field, cmd1_field, length_field, checksum_field, ack_cmd, ack_true, ack_config,
                    success, failed, number, version, enable_chip, sleep_time, mcu_state_image, mcu_state_tls,
                    mcu_state_spi, mcu_state_locked, reset_sensor, reset_mcu, reset_sensor_copy, reset_number,
-                   register_multiple, register_address, read_length, powerdown_scan_frequency, config_sensor_chip,
+                   register_multiple, register_address, register_vendor_id, read_length, powerdown_scan_frequency, config_sensor_chip,
                    psk_flags, psk_length, firmware_offset, firmware_length, firmware_checksum, image_header_field, image_data_field, image_checksum_field}
 
 function extract_cmd0_cmd1(cmd)
@@ -148,8 +149,8 @@ commands = {
         [0] = {
             name = "Write Sensor Register",
             dissect_command = function(tree, buf)
-                tree:add_le(register_multiple, buf(0, 1))
-                tree:add_le(register_address, buf(1, 2))
+                tree:add_le(register_vendor_id, buf(0, 2))
+                tree:add_le(register_address, buf(2, 3))
             end
         },
         [1] = {
@@ -518,11 +519,11 @@ function protocol.dissector(buffer, pinfo, tree)
 
     if from_host then
         if commands[cmd0_val][cmd1_val] ~= nil then
-            commands[cmd0_val][cmd1_val].dissect_command(cmd_subtree, body_buffer)
+            commands[cmd0_val][cmd1_val].dissect_command(cmd_subtree, body_buffer(0, body_buffer:len() - 1))
         end
     else
         if commands[cmd0_val][cmd1_val] ~= nil then
-            commands[cmd0_val][cmd1_val].dissect_reply(cmd_subtree, body_buffer)
+            commands[cmd0_val][cmd1_val].dissect_reply(cmd_subtree, body_buffer(0, body_buffer:len() - 1))
         end
     end
     cmd_subtree.text = summary

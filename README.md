@@ -23,7 +23,14 @@
 *  disassembly of windows driver using `Ghidra`
 * `windbg preview` debugging with time travel
 
-## Data encryption
+# Protocol
+## Image data
+* First 5 bytes of of data is image header (purpose not known)
+* Last 4 bytes (32bit int) is image crc checksum
+* `MPEG2 CRC32` algo is used to calculate image checksum
+* Rest of data is encrypted
+
+### Data encryption
 * Image data is encrypted with some kind of rolling key encryption
 * Every data packet is encrypted with same set of keys 
 * Every key is generated form a seed
@@ -31,7 +38,7 @@
 * Next seed is generated from one before  
 * Data is decrypted by applying XOR operation with key and every 16bit word
 
-### Key gen algo:
+#### Key gen algo:
 ```python
 def rolling_key_gen(seed):
     var1 = seed >> 1 ^ seed
@@ -43,3 +50,28 @@ def rolling_key_gen(seed):
     return (key, nextSeed & 0xffffffff)
 ```
 
+### Image packing
+Images are packed in a way where 6 bytes represents 4 16bit words of pixel data
+
+#### Unpacking algo:
+```python
+def unpack_data_to_16bit(data):
+    # 6 bytes are needed to represent 4 16-bit values
+    assert (len(data) % 6) == 0
+    out = []
+    for i in range(0, len(data), 6):
+        chunk = data[i:i+6]
+        o1 = ((chunk[0] & 0xf) << 8) + chunk[1] 
+        o2 = (chunk[3] << 4) + (chunk[0] >> 4)
+        o3 = ((chunk[5] & 0xf) << 8) + chunk[2] 
+        o4 = (chunk[4] << 4) + (chunk[5] >> 4)
+        out += [o1, o2, o3, o4]
+    return out
+```
+
+# Credits
+Code and info from these related and helpful projects were used in this research:
+* [https://github.com/mpi3d/goodix-fp-dump](https://github.com/mpi3d/goodix-fp-dump)
+* [https://blog.th0m.as/misc/fingerprint-reversing](https://blog.th0m.as/misc/fingerprint-reversing)
+* [https://github.com/tlambertz/goodix-fingerprint-reversing](https://github.com/tlambertz/goodix-fingerprint-reversing)
+* [https://discord.gg/6xZ6k34Vqg](https://discord.gg/6xZ6k34Vqg)

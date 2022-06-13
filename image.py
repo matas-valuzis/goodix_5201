@@ -1,8 +1,128 @@
+from operator import concat
+from pickletools import bytes1, int4
+from usb.core import Device, find
+from usb.control import get_status
+from enum import Enum
 import pyshark
 import struct
 
 SENSOR_WIDTH = 88
 SENSOR_HEIGHT = 108
+DEVICE_VENDOR = 0x27c8
+DEVICE_ID = 0x5201
+
+CHUNK_SIZE = 64
+
+CMD_NOP = 0x0
+CMD_RESET = 0xa2
+CMD_GET_FIRMWARE_VERSION = 0xa8
+CMD_GET_IMAGE = 0x20
+CMD_QUERY_MCU_STATE = 0xae
+CMD_UPLOAD_MCU_CONFIG = 0x90
+
+
+
+
+# fake usb device for testing
+class FakeUSB():
+    src = None
+    def read(self, size):
+        return next(self.src)
+    def write(self, buff):
+        print("Sending %d bytes: %s" % (len(buff), buff.hex()))
+
+class FPDevice:
+    _vendor: int
+    _id: int
+    _connected = False
+    _debug = False
+    _usb: Device
+    
+
+    def __init__(self, vendor, id, debug = False) -> None:
+        self._id = id
+        self._vendor = vendor
+        self._debug = debug
+
+
+    def connect(self) -> None:
+        self._usb = find(self._vendor, self._id)
+        if dev is None:
+            raise ValueError('Device not found')
+        get_status(dev)
+        print("device configs:")
+        print(dev.configurations())
+
+        cfg = dev.configurations()[0]
+        dev.set_configuration(cfg)
+
+        print(cfg.interfaces())
+
+        self._usb = dev
+        self.connected = True
+    
+    def send_cmd(self, cmd, data):
+        buff = bytes()        
+        # cmd
+        buff += bytes((cmd,))
+        # length
+        buff += struct.pack("<h", len(data) + 1)
+        # payload
+        buff += data
+        # checksum
+        buff += bytes((calc_crc(buff),))
+        # pad to 64
+        buff +=  b"\x00" * (CHUNK_SIZE - len(buff) % CHUNK_SIZE)
+        # split to chunks
+        chunks = [buff[0:CHUNK_SIZE]] + [ bytes((cmd | 1,)) + buff[i:i+CHUNK_SIZE-1 ] for i in range(CHUNK_SIZE, len(buff) - CHUNK_SIZE, CHUNK_SIZE - 1) ]
+        for chunk in chunks:
+            self._usb.write(chunk)
+            
+
+    def get_reply(self):
+        data = bytes()
+        # first chunk
+        chunk = self._usb.read(CHUNK_SIZE)
+        data_header = chunk[0:3]
+        cmd = int(data_header[0])
+        data_size = int.from_bytes(data_header[1:], 'little')
+        data_remaining = data_size - 1
+        if data_size < len(chunk[3:]):
+            data += chunk[3:data_remaining + 2]
+            checksum = chunk[data_remaining + 2]
+        else:
+            data += chunk[3:]
+            data_remaining -= CHUNK_SIZE - 3
+            while (data_remaining > CHUNK_SIZE):
+                chunk = self._usb.read(CHUNK_SIZE)
+                data += chunk[1:]
+                data_remaining -= CHUNK_SIZE - 1
+            if data_remaining > 0:
+                chunk = self._usb.read(CHUNK_SIZE)
+                data += chunk[1:data_remaining + 1]
+            checksum = chunk[data_remaining + 1]
+
+        if self._debug:
+            print("Received 0x%x CMD with %d bytes of data (crc 0x%x): \n%s\n" % (cmd, len(data), checksum, data.hex()))
+        return (cmd, data, checksum)
+    
+    def nop(self):
+        self.send_cmd(CMD_NOP, bytes([0x0, 0x0]))
+        self.get_reply()
+
+    def get_firmware(self):
+        self.send_cmd(CMD_GET_FIRMWARE_VERSION, bytes([0x0, 0x0]))
+        cmd, data, checksum = self.get_reply()
+        return data
+    
+    def get_image(self):
+        self.send_cmd(CMD_GET_IMAGE, bytes([0x1, 0x0]))
+        cmd, data, checksum = self.get_reply()
+        return data
+
+
+def calc_crc(data):
+    return (0xaa - sum(data) & 0xff) & 0xff
 
 # saves unpacked values as pgm file
 def save_pgm(unpacked_values, suffix="image"):
@@ -91,6 +211,14 @@ def images_from_wireshark(pcap_file, image_dir = "images"):
         unpacked = unpack_data_to_16bit(dec)
         save_pgm(unpacked, "%s/%s" % (image_dir, str(frame.number)))
 
+
+def response_gen(file):
+    fin = open(file, "rb")
+    data = fin.read()
+    fin.close()
+    for i in range(0, len(data), CHUNK_SIZE):
+        yield data[i:i+CHUNK_SIZE]
+
 def main():
     # fin = open("print_data.bin", "rb")
     # image_data = fin.read()
@@ -99,6 +227,20 @@ def main():
     # print ("Real checksum: %x" % get_image_checksum(image_data))
     # save_pgm(unpack_data_to_16bit(decrypt_data(image_data[:-4])), 'print_image')
     # print ("print_image.pgm image created")
-    images_from_wireshark("wireshark/windows_setup.pcapng")
+    # images_from_wireshark("wireshark/windows_setup.pcapng")
+    # print(image_checksum_lookup_table().hex())
+
+    reply = bytes.fromhex("b00300ae0148ffff00000000090000000000000000000000cb7200006a7600002d0000a19b8a0000b80000202002002040000000030000008975000000080000")
+    
+    image_rsp = response_gen("test_data/get_image_rsp.bin")
+    mcu_config = response_gen("test_data/mcu_config.bin")
+    
+    dev = FPDevice(DEVICE_VENDOR, DEVICE_ID, True)
+    dev._usb = FakeUSB()
+    dev._usb.src = mcu_config
+    # cmd, data, checksum = dev.get_reply()
+    # dev.send_cmd(CMD_UPLOAD_MCU_CONFIG, data)
+    dev.nop()
+
 
 main()
